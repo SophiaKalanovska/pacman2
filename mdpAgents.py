@@ -31,19 +31,15 @@
 from pacman import Directions
 from game import Agent
 import api
+import math
 import random
 import game
 import util
+import time
+
 class Grid:
 
     # Constructor
-    #
-    # Note that it creates variables:
-    #
-    # grid:   an array that has one position for each element in the grid.
-    # width:  the width of the grid
-    # height: the height of the grid
-    #
     # Grid elements are not restricted, so you can place whatever you
     # like at each location. You just have to be careful how you
     # handle the elements when you use them.
@@ -58,30 +54,6 @@ class Grid:
             subgrid.append(row)
 
         self.grid = subgrid
-
-    # Print the grid out.
-    def display(self):
-        for i in range(self.height):
-            for j in range(self.width):
-                # print grid elements with no newline
-                print self.grid[i][j][1],
-            # A new line after each line of the grid
-            print
-        # A line after the grid
-        print
-
-    # The display function prints the grid out upside down. This
-    # prints the grid out so that it matches the view we see when we
-    # look at Pacman.
-    def prettyDisplay(self):
-        for i in range(self.height):
-            for j in range(self.width):
-                # print grid elements with no newline
-                print self.grid[self.height - (i + 1)][j][1],
-            # A new line after each line of the grid
-            print
-        # A line after the grid
-        print
 
     # Set and get the values of specific elements in the grid.
     # Here x and y are indices.
@@ -112,10 +84,9 @@ class MDPAgent(Agent):
     # The constructor. We don't use this to create the map because it
     # doesn't have access to state information.
     def __init__(self):
-        self.last= Directions.STOP
-        print "Running init!"
+        self.soFar = 0
 
-
+    # Method to get the utility of a state
     def getUtility(self,i,j):
         return self.map.getValue(i, j)[1]
 
@@ -125,252 +96,224 @@ class MDPAgent(Agent):
          print "Running registerInitialState!"
          # Make a map of the right size
          self.makeMap(state)
+         # states is an array of all grid elements that are not walls
          self.states = []
+         # initial food is needed for the utilities
+         self.initialFood = 0
          self.addFoodInMap(state)
          self.addWallsToMap(state)
          self.addGhostsToMap(state)
-         self.map.display()
-         print "----------------------------------------------"
+         self.createStates(state)
 
     # This is what gets run when the game ends.
     def final(self, state):
-        print "Looks like I just died!"
+        print "Finished game"
+        print "so far"
+        print self.soFar
 
     # Make a map by creating a grid of the right size
     def makeMap(self,state):
         corners = api.corners(state)
-        print corners
         height = self.getLayoutHeight(corners)
         width  = self.getLayoutWidth(corners)
         self.map = Grid(width, height)
 
     # Functions to get the height and the width of the grid.
-    #
-    # We add one to the value returned by corners to switch from the
-    # index (returned by corners) to the size of the grid (that damn
-    # "start counting at zero" thing again).
     def getLayoutHeight(self, corners):
-        height = -1
-        for i in range(len(corners)):
-            if corners[i][1] > height:
-                height = corners[i][1]
-        return height + 1
+        return max((map(lambda i: corners[i][1], range(len(corners))))) + 1
 
     def getLayoutWidth(self, corners):
-        width = -1
-        for i in range(len(corners)):
-            if corners[i][0] > width:
-                width = corners[i][0]
-        return width + 1
+        return max((map(lambda i: corners[i][0], range(len(corners))))) + 1
 
     # Functions to manipulate the map.
-    #
     # Put every element in the list of wall elements into the map
     def addWallsToMap(self, state):
         walls = api.walls(state)
-        for i in range(len(walls)):
-            self.map.setValue(walls[i][0], walls[i][1], ('%', '%'))
+        map(lambda i: self.map.setValue(walls[i][0], walls[i][1], ('%', '%')), range(len(walls)))
 
+    # Put every element in the list of ghosts elements into the map
+    # It has a reward of - the initial food
     def addGhostsToMap(self, state):
         ghost = api.ghosts(state)
-        for i in range(len(ghost)):
-            self.map.setValue(int(ghost[i][0]), int(ghost[i][1]), ('-5', 0))
+        map(lambda i: self.map.setValue(int(ghost[i][0]), int(ghost[i][1]), ( -self.initialFood , 0)), range(len(ghost)))
 
+    # returns if the coordinate (i, j) is a state (not a wall)
+    def isLegal(self, i , j):
+        if (self.map.getValue(i,j )[1] != ('%')):
+            return True
+        else:
+            return False
+
+    # if the move is legal set the reward and call aroundGhosts with that reward
+    def calculateAroundGhost(self, x, y, reward, recursion):
+        if self.isLegal(x,y) :
+            self.map.setValue(x, y, (reward , 0))
+            recursion += 1
+            self.aroundGhosts(x, y, reward, recursion)
+
+    # the four blocks around the ghoast have the ancestors reward/2
+    def aroundGhosts(self, x, y, reward, recursion,):
+        if (x != 0 and x != self.map.getWidth() and y != 0 and y != self.map.getHeight() and recursion < 5):
+            newReward = round(reward/2,2)
+            listOfDirections = [(x + 1, y),(x - 1, y),(x , y + 1),(x , y - 1)]
+            map(lambda (i, j) : self.calculateAroundGhost(i, j, newReward, recursion), listOfDirections)
+
+    # updateGhostsToMap, if the ghost is not scared set the reward - self.initialFood and set
+    # four blocks around the ghoast have the ancestors reward/2
+    # if it is scared the reward is the same as an empty state
+    def updateGhostsToMap(self, state):
+        ghost = api.ghosts(state)
+        for i in range(len(ghost)):
+            if (api.ghostStates(state)[i][1] != 1):
+                self.map.setValue(int(ghost[i][0]), int(ghost[i][1]), ( -self.initialFood , 0))
+                self.aroundGhosts(int(ghost[i][0]), int(ghost[i][1]),-self.initialFood, 0)
+            else:
+                self.map.setValue(int(ghost[i][0]), int(ghost[i][1]), ( -0.02 , 0))
 
 
     # Create a map with a current picture of the food that exists.
     def addFoodInMap(self, state):
-        # First, make all grid elements that aren't walls blank.
-
-        for i in range(self.map.getWidth()):
-            for j in range(self.map.getHeight()):
-                # print self.map.getValue(i, j)
-                # if self.map.getValue(i, j)[0] != ('%') :
-                self.map.setValue(i, j, ('0.03', 0))
-
-        # ghost = api.ghosts(state)
-        # for i in range(len(ghost)):
-        #     self.map.setValue(int (ghost[i][0]), int (ghost[i][1]), ('-1', -1))
+        # First, make all grid elements that aren't walls with a reward - 0.02.
+        [self.map.setValue(i, j, ('-0.02', 0))
+           for i in range(self.map.getWidth())
+           for j in range(self.map.getHeight())]
 
         food = api.food(state)
-        for i in range(len(food)):
-
-            self.map.setValue(food[i][0], food[i][1], ('1', 0))
-
-
-
-    def getLeft(self,i,j):
-        if (self.last == Directions.NORTH):
-            self.last = Directions.WEST
-            # return((i - 1), j )
-        elif (self.last == Directions.SOUTH):
-            self.last = Directions.EAST
-            # return((i + 1), j)
-        elif (self.last == Directions.EAST):
-            self.last = Directions.NORTH
-            # return(i , (j + 1))
-        else :
-            self.last = Directions.SOUTH
-            # return(i,(j - 1))
-
-    def getRight(self,i,j):
-        if (self.last == Directions.NORTH):
-            self.last = Directions.EAST
-            # return((i + 1), j)
-
-        elif (self.last == Directions.SOUTH):
-            self.last = Directions.WEST
-            # return((i - 1), j )
-
-        elif (self.last == Directions.EAST):
-            self.last = Directions.SOUTH
-            # return(i,(j - 1))
-        else :
-            self.last = Directions.NORTH
-            return(i , (j + 1))
-
-    def expectedUtility(self,i, j, probablility):
-
-        if self.map.getValue(i, j)[1] != ('%'):
-            if (self.last == Directions.NORTH) and self.map.getValue(i,(j + 1))[1] != ('%'):
-                return  probablility * self.getUtility(i,(j + 1))
-            elif (self.last == Directions.SOUTH) and self.map.getValue(i,(j - 1))[1] != ('%'):
-                return  probablility * self.getUtility(i,(j - 1))
-            elif (self.last == Directions.EAST)and self.map.getValue((i +1),j)[1] != ('%'):
-                return  probablility * self.getUtility((i +1),j)
-            elif (self.last == Directions.WEST)and self.map.getValue((i -1),j)[1] != ('%'):
-                return  probablility * self.getUtility((i -1),j)
-            else:
-                return probablility * self.getUtility(i,j)
-        else:
-            return "*"
-
-    def expectedUtilities(self,i, j):
-        utility = 0;
-        utility += self.expectedUtility(i, j, 0.8)
-        self.getLeft(i, j)
-        utility += self.expectedUtility(i, j, 0.1)
-        self.getRight(i, j)
-        utility += self.expectedUtility(i, j, 0.1)
-        # left = self.getLeft(i, j)
-        # if ( self.expectedUtility(left[0], left[1], 0.1) != "*" ):
-        #     utility += self.expectedUtility(left[0], left[1], 0.1)
-        # else:
-        #     utility += self.expectedUtility(i, j, 0.1)
-        #
-        # right = self.getRight(i, j)
-        #
-        # if ( self.expectedUtility(right[0], right[1], 0.1) != "*" ):
-        #     utility += self.expectedUtility(right[0], right[1], 0.1)
-        # else:
-        #     utility += self.expectedUtility(i, j, 0.1)
+        food += api.capsules(state)
+        self.initialFood = len(food)
+        map(lambda i: self.map.setValue(food[i][0], food[i][1], (self.initialFood, 0)), range(len(food)))
 
 
-        return utility
-
-
-
-    def expectedUtilitiesList(self,i, j):
-        expectedUtilitiesList =[]
-
-
-        self.last= Directions.NORTH
-        expectedUtilitiesList.append(self.expectedUtilities(i , j))
-        self.last= Directions.SOUTH
-        expectedUtilitiesList.append(self.expectedUtilities(i , j))
-        self.last= Directions.EAST
-        expectedUtilitiesList.append( self.expectedUtilities(i , j))
-        self.last= Directions.WEST
-        expectedUtilitiesList.append( self.expectedUtilities(i , j))
-        return expectedUtilitiesList
-
-
-    def Bellman(self, state):
-        reward = float(self.map.getValue(state[0], state[1])[0])
-        maxUtility = self.expectedUtilitiesList(state[0], state[1])
-        self.map.setValue(state[0], state[1], (reward, float(reward + 0.7 * max(maxUtility))))
-
-
-
-    def calculateUtilities(self, state):
-        for k in range(len(self.states)):
-
-            for state in self.states:
-                self.Bellman(state)
-
-
+    # the reason of having two methods addFoodInMap and update is
+    # update adds -0.02 to the states that are not walls which runs in 0(n), the addFood
+    # has a nested for loop, so it runs in O(n^2)
     def updateFoodInMap(self, state):
-        # First, make all grid elements that aren't walls blank.
+        # First, make all grid elements thataren't walls with a reward - 0.02.
+        map(lambda s: self.map.setValue(s[0], s[1], ('-0.02', 0)) ,self.states)
+        food = api.food(state)
+        food += api.capsules(state)
+        map(lambda i: self.map.setValue(food[i][0], food[i][1], (self.initialFood/len(food), 0)), range(len(food)))
+
+    # After everything is added to the map this method is called (only once in the beggining)
+    # to populate the array of all the states that aren't walls
+    def createStates(self, state):
         for i in range(self.map.getWidth()):
             for j in range(self.map.getHeight()):
                 if self.map.getValue(i, j)[1] != ('%') :
                     self.states.append((i,j))
-                    self.map.setValue(i, j, ('-0.03', 0))
 
-        food = api.food(state)
-        for i in range(len(food)):
-            self.map.setValue(food[i][0], food[i][1], ('1', 0))
-
-    def north(self, legal):
-        if (Directions.NORTH in legal):
-            return api.makeMove(Directions.NORTH, legal)
+    #Converts the current direction you are facing to the left of it
+    # that is determined by the state you are in and the state you are going to
+    def getLeft(self, i, j, x,y):
+        if (x+1 == i):
+            return (x ,(y + 1))
+        elif (x-1 == i):
+            return (x ,(y - 1))
+        elif (j+1 == y):
+            return ((x + 1) ,y)
         else :
-            return api.makeMove(Directions.STOP, legal)
+            return ((x - 1) ,y)
 
-    def south(self, legal):
-        if (Directions.SOUTH in legal):
-            return api.makeMove(Directions.SOUTH, legal)
+    #Converts the current direction you are facing to the right of it
+    # that is determined by the state you are in and the state you are going to
+    def getRight(self, i, j, x,y):
+        if (x+1 == i):
+            return (x ,(y - 1))
+        elif (x-1 == i):
+            return (x ,(y + 1))
+        elif (j+1 == y):
+            return ((x - 1) ,y)
         else :
-            return api.makeMove(Directions.STOP, legal)
-
-    def east(self, legal):
-        if (Directions.EAST in legal):
-            return api.makeMove(Directions.EAST, legal)
-        else :
-            return api.makeMove(Directions.STOP, legal)
-
-    def west(self, legal):
-        if (Directions.WEST in legal):
-            return api.makeMove(Directions.WEST, legal)
-        else :
-            return api.makeMove(Directions.STOP, legal)
-
-    def stop():
-        return api.makeMove(Directions.STOP, legal)
+            return ((x + 1 ),y)
 
 
-    def move(self,argument, legal):
-        if (argument == 0):
-            return self.north(legal)
-        elif (argument == 1):
-            return self.south(legal)
-        elif (argument == 2):
-            return self.east(legal)
-        elif (argument == 3):
-            return self.west(legal)
+    # if the state you are facing is legal multiply it by the probably
+    # if not multipy the current state you are in with the probability
+    def expectedUtility(self,i, j,  probability, x,y):
+        if self.isLegal(i,j):
+            return  probability * self.getUtility(i,j)
         else:
-            return self.stop
+            return  probability * self.getUtility(x, y)
 
-    # For now I just move randomly, but I display the map to show my progress
+
+    # the expectedUtility of each direction is the sum of
+    def expectedUtilities(self,i, j, x, y):
+        utility = 0;
+
+        # 0.8 of the utility of the directon you are facing
+        utility += self.expectedUtility(i, j, 0.8, x, y)
+        pair = self.getLeft(i, j, x,y)
+
+        # + 0.1 of the utility of the directon to the left of you
+        utility += self.expectedUtility(pair[0], pair[1], 0.1, x, y )
+        pair = self.getRight(i, j, x,y)
+
+        # + 0.1 of the utility of the directon to the right of you
+        utility += self.expectedUtility(pair[0], pair[1], 0.1, x, y )
+        return utility
+
+
+    # the expected utiilityList calculats the utilities of all directions
+    # (by calling expectedUtilities)of each of them and returns the list
+    def expectedUtilitiesList(self,x, y):
+        listOfDirections = [(x + 1, y),(x - 1, y),(x , y + 1),(x , y - 1)]
+        return map(lambda (i, j) : round(self.expectedUtilities(i , j, x , y), 2), listOfDirections)
+
+
+
+
+    def Bellman(self, state):
+        # get the first float in the grid element (the reward) at the state you are at
+        reward = float(self.map.getValue(state[0], state[1])[0])
+        # set the value of the second float in the grid element (the utiility) to be equal
+        # to the reward + 0.7 of the maxUtility returned from the expected utiilityList
+        # the reward of the state doesn't change
+        self.map.setValue(state[0], state[1], (reward, float(reward + 0.7 *(max(self.expectedUtilitiesList(state[0], state[1]))))))
+
+
+    # in the caculation of utilities, the value almost stops changing when you have done
+    # the number of current states iterations
+    def calculateUtilities(self, state):
+        map(lambda k: map( self.Bellman, self.states), range(len(self.states)))
+
+
+    # I update the food in map, add the ghosts and then calculate the utiities
+    # from the legal action I take the bestUtilityand move towards it.
     def getAction(self, state):
+        start_time = time.time()
         self.updateFoodInMap(state)
-        self.addGhostsToMap(state)
+        food = api.food(state)
 
+        # if the food is one only the ghost is added to the map without
+        # four blocks around the ghoast to have the ancestors reward/2
+        if len(food) == 1 :
+            self.map.setValue(food[0][0], food[0][1], (self.initialFood, 0))
+            self.addGhostsToMap(state)
+        else:
+            self.updateGhostsToMap(state)
         self.calculateUtilities(state)
-        # print "---------------------------------------"
-        # self.map.prettyDisplay()
-        # print "---------------------------------------"
-        # Get the actions we can try, and remove "STOP" if that is one of them.
+
+
         legal = api.legalActions(state)
-
-
         pacman = api.whereAmI(state)
+        x = pacman[0]
+        y = pacman[1]
 
-        maxUtility = self.expectedUtilitiesList(pacman[0], pacman[1])
-        pacmanUtility = self.map.getValue(pacman[0], pacman[1])[1]
-        maxUtility.append(pacmanUtility)
 
-        return self.move(maxUtility.index(max(maxUtility)), legal)
-        #     legal.remove(Directions.STOP)
-        # # Random choice between the legal options.
-        # return api.makeMove(random.choice(legal), legal)
+        thisdict =	{
+          (x + 1, y): Directions.EAST,
+          (x - 1, y): Directions.WEST,
+          (x , y + 1): Directions.NORTH,
+          (x , y - 1): Directions.SOUTH,
+          (x,y): Directions.STOP
+        }
+
+        # filter the actions that are legal
+        legalCoordinates = list(filter(lambda (i, j) : self.isLegal(i,j), thisdict))
+        # choooe the best utility
+        legalMoveUtility = map(lambda (i, j) : round(self.expectedUtilities(i , j, x , y), 2), legalCoordinates)
+
+        # get the index of it
+        indexOfMove = legalMoveUtility.index(max(legalMoveUtility))
+        # get the coordinate and do the action that is mapped to in the dictionary
+        return api.makeMove(thisdict.get(legalCoordinates[indexOfMove]), legal)
